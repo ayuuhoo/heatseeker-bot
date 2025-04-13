@@ -7,12 +7,12 @@ class Vec3(Vector3):
     """
     This class should provide you with all the basic vector operations that you need, but feel free to extend its
     functionality when needed.
-    The vectors found in the GameTickPacket will be flatbuffer vectors. Cast them to Vec3 like this:
+    The vectors found in the GamePacket will be flatbuffer vectors. Cast them to Vec3 like this:
     `car_location = Vec3(car.physics.location)`.
 
     Remember that the in-game axis are left-handed.
 
-    When in doubt visit the wiki: https://github.com/RLBot/RLBot/wiki/Useful-Game-Values
+    When in doubt visit the wiki: https://wiki.rlbot.org/botmaking/useful-game-values/
     """
 
     def __new__(
@@ -57,17 +57,17 @@ class Vec3(Vector3):
         scale = 1 / float(scale)
         return self * scale
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"Vec3({self.x:.2f}, {self.y:.2f}, {self.z:.2f})"
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.__str__()
 
-    def flat(self):
+    def flat(self) -> "Vec3":
         """Returns a new Vec3 that equals this Vec3 but projected onto the ground plane. I.e. where z=0."""
         return Vec3(self.x, self.y, 0)
 
-    def length(self):
+    def length(self) -> float:
         """Returns the length of the vector. Also called magnitude and norm."""
         return math.sqrt(self.x**2 + self.y**2 + self.z**2)
 
@@ -75,7 +75,7 @@ class Vec3(Vector3):
         """Returns the distance between this vector and another vector using pythagoras."""
         return (self - other).length()
 
-    def normalized(self):
+    def normalized(self) -> "Vec3":
         """Returns a vector with the same direction but a length of one."""
         return self / self.length()
 

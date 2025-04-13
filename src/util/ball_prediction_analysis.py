@@ -11,7 +11,9 @@ GOAL_THRESHOLD = 5235
 GOAL_SEARCH_INCREMENT = 40
 
 
-def find_slice_at_time(ball_prediction: BallPrediction, game_time: float):
+def find_slice_at_time(
+    ball_prediction: BallPrediction, game_time: float
+) -> PredictionSlice | None:
     """
     This will find the future position of the ball at the specified time. The returned
     Slice object will also include the ball's velocity, etc.
@@ -22,10 +24,9 @@ def find_slice_at_time(ball_prediction: BallPrediction, game_time: float):
     )  # We know that there are 120 slices per second.
     if 0 <= approx_index < len(ball_prediction.slices):
         return ball_prediction.slices[approx_index]
-    return None
 
 
-def predict_future_goal(ball_prediction: BallPrediction):
+def predict_future_goal(ball_prediction: BallPrediction) -> PredictionSlice | None:
     """
     Analyzes the ball prediction to see if the ball will enter one of the goals. Only works on standard arenas.
     Will return the first ball slice which appears to be inside the goal, or None if it does not enter a goal.
@@ -43,7 +44,7 @@ def find_matching_slice(
     start_index: int,
     predicate: Callable[[PredictionSlice], bool],
     search_increment=1,
-):
+) -> PredictionSlice | None:
     """
     Tries to find the first slice in the ball prediction which satisfies the given predicate. For example,
     you could find the first slice below a certain height. Will skip ahead through the packet by search_increment
@@ -59,4 +60,3 @@ def find_matching_slice(
                 ball_slice = ball_prediction.slices[j]
                 if predicate(ball_slice):
                     return ball_slice
-    return None

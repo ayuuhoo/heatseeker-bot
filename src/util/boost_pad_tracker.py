@@ -1,11 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from rlbot.flat import FieldInfo, GamePacket
 
 from util.vec import Vec3
 
 
-@dataclass
+@dataclass(slots=True)
 class BoostPad:
     location: Vec3
     is_full_boost: bool
@@ -13,6 +13,7 @@ class BoostPad:
     timer: float  # Counts the number of seconds that the pad has been *inactive*
 
 
+@dataclass(init=False, slots=True)
 class BoostPadTracker:
     """
     This class merges together the boost pad location info with the is_active info so you can access it
@@ -20,9 +21,8 @@ class BoostPadTracker:
     game has started, and then update_boost_status every frame so that it knows which pads are active.
     """
 
-    def __init__(self):
-        self.boost_pads: list[BoostPad] = []
-        self._full_boosts_only: list[BoostPad] = []
+    boost_pads: list[BoostPad] = field(default_factory=lambda: [])
+    _full_boosts_only: list[BoostPad] = field(default_factory=lambda: [])
 
     def initialize_boosts(self, game_info: FieldInfo):
         self.boost_pads: list[BoostPad] = [

@@ -1,5 +1,6 @@
+#:schema https://rlbot.org/schemas/match.json
 [rlbot]
-launcher = "steam"
+launcher = "Steam"
 # We'll run the bot ourself so we don't have restart the match
 # `python src/bot.py` in our case
 auto_start_agents = false

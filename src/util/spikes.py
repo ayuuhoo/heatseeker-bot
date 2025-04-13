@@ -1,3 +1,6 @@
+import math
+from dataclasses import dataclass
+
 from rlbot.flat import GamePacket, PlayerInfo
 
 from util.vec import Vec3
@@ -11,16 +14,16 @@ from util.vec import Vec3
 MAX_DISTANCE_WHEN_SPIKED = 200
 
 
+@dataclass(init=False, slots=True)
 class SpikeWatcher:
-    def __init__(self):
-        self.carrying_car: PlayerInfo | None = None
-        self.spike_moment = 0
-        self.carry_duration = 0
+    carrying_car: PlayerInfo | None = None
+    spike_moment: float = 0
+    carry_duration: float = 0
 
     def read_packet(self, packet: GamePacket):
         ball_location = Vec3(packet.balls[0].physics.location)
         closest_candidate: PlayerInfo | None = None
-        closest_distance = 999999
+        closest_distance = math.inf
 
         for car in packet.players:
             car_location = Vec3(car.physics.location)

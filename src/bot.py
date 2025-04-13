@@ -1,5 +1,6 @@
 from rlbot.flat import BallAnchor, ControllerState, GamePacket
 from rlbot.managers import Bot
+from rlbot_flatbuffers import CarAnchor
 
 from util.ball_prediction_analysis import find_slice_at_time
 from util.boost_pad_tracker import BoostPadTracker
@@ -46,6 +47,8 @@ class MyBot(Bot):
         # By default we will chase the ball, but target_location can be changed later
         target_location = ball_location
 
+        self.renderer.begin_rendering()
+
         if car_location.dist(ball_location) > 1500:
             # We're far away from the ball, let's try to lead it a little bit
             # self.ball_prediction can predict bounces, etc
@@ -65,10 +68,12 @@ class MyBot(Bot):
                 )
 
         # Draw some things to help understand what the bot is thinking
-        self.renderer.draw_line_3d(car_location, target_location, self.renderer.white)
+        self.renderer.draw_line_3d(
+            CarAnchor(self.index), target_location, self.renderer.white
+        )
         self.renderer.draw_string_3d(
             f"Speed: {car_velocity.length():.1f}",
-            car_location,
+            CarAnchor(self.index),
             1,
             self.renderer.white,
         )
@@ -78,9 +83,11 @@ class MyBot(Bot):
             self.renderer.cyan,
         )
 
+        self.renderer.end_rendering()
+
         if 750 < car_velocity.length() < 800:
             # We'll do a front flip if the car is moving at a certain speed.
-            return self.begin_front_flip(packet)  # type: ignore
+            return self.begin_front_flip(packet)
 
         controls = ControllerState()
         controls.steer = steer_toward_target(my_car, target_location)
@@ -89,7 +96,7 @@ class MyBot(Bot):
 
         return controls
 
-    def begin_front_flip(self, packet: GamePacket):
+    def begin_front_flip(self, packet: GamePacket) -> ControllerState:
         # Send some quickchat just for fun
         # There won't be any content of the message for other bots,
         # but "I got it!" will be display for a human to see!
@@ -109,7 +116,7 @@ class MyBot(Bot):
         )
 
         # Return the controls associated with the beginning of the sequence so we can start right away.
-        return self.active_sequence.tick(packet)
+        return self.active_sequence.tick(packet)  # type: ignore
 
 
 if __name__ == "__main__":

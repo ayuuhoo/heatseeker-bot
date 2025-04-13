@@ -1,15 +1,17 @@
-from dataclasses import dataclass
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 
-from rlbot.flat import GamePacket, ControllerState
+from rlbot.flat import ControllerState, GamePacket
 
 
-@dataclass
+@dataclass(slots=True)
 class StepResult:
     controls: ControllerState
     done: bool
 
 
-class Step:
+class Step(ABC):
+    @abstractmethod
     def tick(self, packet: GamePacket) -> StepResult:
         """
         Return appropriate controls for this step in the sequence. If the step is over, you should
@@ -20,16 +22,17 @@ class Step:
         raise NotImplementedError
 
 
+@dataclass(slots=True)
 class ControlStep(Step):
     """
     This allows you to repeat the same controls every frame for some specified duration. It's useful for
     scheduling the button presses needed for kickoffs / dodges / etc.
     """
 
-    def __init__(self, duration: float, controls: ControllerState):
-        self.duration = duration
-        self.controls = controls
-        self.start_time: float | None = None
+    duration: float
+    controls: ControllerState
+
+    start_time: float | None = field(default=None, init=False)
 
     def tick(self, packet: GamePacket) -> StepResult:
         if self.start_time is None:
@@ -38,11 +41,12 @@ class ControlStep(Step):
         return StepResult(controls=self.controls, done=elapsed_time > self.duration)
 
 
+@dataclass(slots=True)
 class Sequence:
-    def __init__(self, steps: list[Step]):
-        self.steps = steps
-        self.index = 0
-        self.done = False
+    steps: list[Step]
+
+    index: int = field(default=0, init=False)
+    done: bool = field(default=False, init=False)
 
     def tick(self, packet: GamePacket) -> ControllerState | None:
         while self.index < len(self.steps):

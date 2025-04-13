@@ -1,8 +1,9 @@
+#:schema https://rlbot.org/schemas/match.json
 [rlbot]
 # use this along with launcher = "custom"
 # launcher_arg = "legendary"
 # "Steam", "Epic", "Custom", "NoLaunch"
-launcher = "steam"
+launcher = "Steam"
 # Should RLBot start the bot processes automatically, or will a separate script start them
 auto_start_agents = true
 # Should RLBot wait for the bot processes to start before starting the match
@@ -92,11 +93,11 @@ assist_goal_score = "Zero"
 input_restriction = "Default"
 
 [[cars]]
-type = "human"
-team = 0
+type = "Human"
+team = "Blue"
 
 [[cars]]
 config_file = "src/bot.toml"
-team = 1
+team = "Orange"
 # If RLBot should start this bot automatically with its specified `run_command` or not
 auto_start = true
