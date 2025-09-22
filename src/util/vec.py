@@ -50,7 +50,7 @@ class Vec3(Vector3):
     def __mul__(self, scale: float) -> "Vec3":
         return Vec3(self.x * scale, self.y * scale, self.z * scale)
 
-    def __rmul__(self, scale):
+    def __rmul__(self, scale: "float | Vec3") -> "Vec3":
         return self * scale
 
     def __truediv__(self, scale: float) -> "Vec3":
@@ -61,7 +61,7 @@ class Vec3(Vector3):
         return f"Vec3({self.x:.2f}, {self.y:.2f}, {self.z:.2f})"
 
     def __repr__(self) -> str:
-        return self.__str__()
+        return f"Vec3({self.x}, {self.y}, {self.z})"
 
     def flat(self) -> "Vec3":
         """Returns a new Vec3 that equals this Vec3 but projected onto the ground plane. I.e. where z=0."""

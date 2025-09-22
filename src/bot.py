@@ -1,3 +1,5 @@
+from typing import override
+
 from rlbot.flat import BallAnchor, ControllerState, GamePacket
 from rlbot.managers import Bot
 from rlbot_flatbuffers import CarAnchor
@@ -11,12 +13,14 @@ from util.vec import Vec3
 
 class MyBot(Bot):
     active_sequence: Sequence | None = None
-    boost_pad_tracker = BoostPadTracker()
+    boost_pad_tracker: BoostPadTracker = BoostPadTracker()
 
+    @override
     def initialize(self):
         # Set up information about the boost pads now that the game is active and the info is available
         self.boost_pad_tracker.initialize_boosts(self.field_info)
 
+    @override
     def get_output(self, packet: GamePacket) -> ControllerState:
         """
         This function will be called by the framework many times per second. This is where you can
@@ -34,9 +38,7 @@ class MyBot(Bot):
         # This is good to keep at the beginning of get_output. It will allow you to continue
         # any sequences that you may have started during a previous call to get_output.
         if self.active_sequence is not None and not self.active_sequence.done:
-            controls = self.active_sequence.tick(packet)
-            if controls is not None:
-                return controls
+            return self.active_sequence.tick(packet)
 
         # Gather some information about our car and the ball
         my_car = packet.players[self.index]
@@ -116,7 +118,7 @@ class MyBot(Bot):
         )
 
         # Return the controls associated with the beginning of the sequence so we can start right away.
-        return self.active_sequence.tick(packet)  # type: ignore
+        return self.active_sequence.tick(packet)
 
 
 if __name__ == "__main__":

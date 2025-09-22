@@ -13,7 +13,7 @@ if __name__ == "__main__":
     match_manager.start_match(root_dir / MATCH_CONFIG_PATH, False)
 
     # wait
-    input("\nPress any enter to end the match: ")
+    _ = input("\nPress any enter to end the match: ")
 
     # end the match and disconnect, don't shutdown RLBotServer
     match_manager.stop_match()

@@ -43,7 +43,7 @@ def find_matching_slice(
     ball_prediction: BallPrediction,
     start_index: int,
     predicate: Callable[[PredictionSlice], bool],
-    search_increment=1,
+    search_increment: int = 1,
 ) -> PredictionSlice | None:
     """
     Tries to find the first slice in the ball prediction which satisfies the given predicate. For example,

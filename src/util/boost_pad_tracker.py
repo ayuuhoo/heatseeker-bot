@@ -25,16 +25,14 @@ class BoostPadTracker:
     _full_boosts_only: list[BoostPad] = field(default_factory=lambda: [])
 
     def initialize_boosts(self, game_info: FieldInfo):
-        self.boost_pads: list[BoostPad] = [
+        self.boost_pads = [
             BoostPad(Vec3(rb.location), rb.is_full_boost, False, 0)
             for rb in game_info.boost_pads
         ]
 
         # Cache the list of full boosts since they're commonly requested.
         # They reference the same objects in the boost_pads list.
-        self._full_boosts_only: list[BoostPad] = [
-            bp for bp in self.boost_pads if bp.is_full_boost
-        ]
+        self._full_boosts_only = [bp for bp in self.boost_pads if bp.is_full_boost]
 
     def update_boost_status(self, packet: GamePacket):
         for i, packet_pad in enumerate(packet.boost_pads):
