@@ -10,7 +10,7 @@ if __name__ == "__main__":
     root_dir = Path(__file__).parent
 
     # Start RLBotServer and the match
-    match_manager = MatchManager(root_dir)
+    match_manager = MatchManager()
     match_manager.start_match(root_dir / MATCH_CONFIG_FILE)
 
     sleep(5)
