@@ -6,9 +6,9 @@ Wiki: [RLBot/python-interface/wiki](https://github.com/RLBot/python-interface/wi
 
 ## Quick Start
 
-1. Install Python 3.12 or later
+1. Install [Python 3.12 or later](https://www.python.org/)
 1. Create a Python virtual environment
-   - `python3 -m venv venv`
+   - `python -m venv venv`
 1. Activate the virtual environment
    - Windows: `.\venv\Scripts\activate`
    - Linux: `source venv/bin/activate`
