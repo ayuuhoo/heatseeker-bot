@@ -14,8 +14,6 @@ Wiki: [RLBot/python-interface/wiki](https://github.com/RLBot/python-interface/wi
    - Linux: `source venv/bin/activate`
 1. Install the required packages
    - `pip install -r requirements.txt`
-1. Download `RLBotServer.exe` and place it in the root directory
-   - <https://github.com/RLBot/core>
 1. Modify `rlbot.toml` to your liking
    - Note: `dev.toml` also exists with a few changed settings that might be useful for development
 1. Start a match with `python run.py`
