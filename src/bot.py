@@ -9,7 +9,8 @@ from util.orientation import Orientation
 from util.vec import Vec3
 
 HALF_PI = math.pi / 2
-HOVER_HEIGHT = 200  # default hover z (UU); tune per testing
+HOVER_HEIGHT = 250   # default hover z (UU); tune per testing
+GOAL_RADIUS = 500    # flat distance from goal center before starting jump
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -34,7 +35,8 @@ def find_goal_crossing(slices, goal_y: float) -> "Vec3 | None":
 
 
 class HeatseekGoalie(Bot):
-    _state: str = "STARTUP"
+    # States: RETURN → drive back to goal; STARTUP → jump airborne; HOVER → candle hover
+    _state: str = "RETURN"
     _startup_t0: float = -1.0
     _goal_y: float = 0.0
     _goal_pos: Vec3 = Vec3(0, 0, 0)
@@ -44,7 +46,7 @@ class HeatseekGoalie(Bot):
         for g in self.field_info.goals:
             if g.team_num == self.team:
                 self._goal_y = float(g.location.y)
-                self._goal_pos = Vec3(g.location.x, g.location.y, 0)
+                self._goal_pos = Vec3(0, g.location.y, 0)
                 break
 
     @override
@@ -54,11 +56,12 @@ class HeatseekGoalie(Bot):
 
         match_phase = packet.match_info.match_phase
 
-        # Kickoff: dedicated logic; also reset so hover starts fresh after kickoff
+        # During kickoff: always return to goal (we're a goalie; let opponents or
+        # a forward teammate handle the ball)
         if match_phase == MatchPhase.Kickoff:
-            self._state = "STARTUP"
-            self._startup_t0 = -1.0
-            return self._do_kickoff(packet)
+            self._state = "RETURN"
+            my_car = packet.players[self.index]
+            return self._do_return(my_car, Vec3(my_car.physics.location))
 
         if match_phase != MatchPhase.Active:
             return ControllerState()
@@ -69,11 +72,20 @@ class HeatseekGoalie(Bot):
         rot = physics.rotation
         angvel = Vec3(physics.angular_velocity)
         t = packet.match_info.seconds_elapsed
+        is_on_ground = my_car.air_state == AirState.OnGround
 
-        if my_car.air_state == AirState.OnGround and self._state != "STARTUP":
-            self._state = "STARTUP"
-            self._startup_t0 = -1.0
+        # State transitions driven by ground contact
+        if is_on_ground:
+            goal_dist = pos.flat().dist(self._goal_pos.flat())
+            if goal_dist > GOAL_RADIUS:
+                # Not near the goal — go back before trying to hover
+                self._state = "RETURN"
+            elif self._state != "STARTUP":
+                # Near the goal and not already in jump sequence — start one
+                self._state = "STARTUP"
+                self._startup_t0 = -1.0
 
+        # Predict where ball will cross our goal line
         target_x = 0.0
         target_z = float(HOVER_HEIGHT)
         if self.ball_prediction.slices:
@@ -91,50 +103,41 @@ class HeatseekGoalie(Bot):
         )
         self.renderer.end_rendering()
 
-        if self._state == "STARTUP":
-            return self._do_startup(t, my_car)
-        return self._do_hover(pos, rot, angvel, target_x, target_z)
-
-    def _do_kickoff(self, packet: GamePacket) -> ControllerState:
-        my_car = packet.players[self.index]
-        ball_pos = Vec3(packet.balls[0].physics.location)
-        my_pos = Vec3(my_car.physics.location)
-        my_dist = my_pos.dist(ball_pos)
-
-        # Check if we are the closest teammate to the ball
-        is_closest = all(
-            i == self.index
-            or packet.players[i].team != self.team
-            or Vec3(packet.players[i].physics.location).dist(ball_pos) >= my_dist
-            for i in range(len(packet.players))
-        )
-
-        controls = ControllerState()
-        if is_closest:
-            controls.throttle = 1.0
-            controls.boost = True
-            controls.steer = steer_toward_target(my_car, ball_pos)
+        if self._state == "RETURN":
+            return self._do_return(my_car, pos)
+        elif self._state == "STARTUP":
+            return self._do_startup(t, my_car, rot)
         else:
-            # Return to goal and get ready to hover
-            controls.throttle = 1.0
-            controls.steer = steer_toward_target(my_car, self._goal_pos)
+            return self._do_hover(pos, rot, angvel, target_x, target_z)
 
+    def _do_return(self, my_car, pos: Vec3) -> ControllerState:
+        """Drive back to the goal at ground level."""
+        controls = ControllerState()
+        controls.throttle = 1.0
+        controls.steer = steer_toward_target(my_car, self._goal_pos)
+        if pos.flat().dist(self._goal_pos.flat()) > 1500:
+            controls.boost = True
         return controls
 
-    def _do_startup(self, t: float, my_car) -> ControllerState:
+    def _do_startup(self, t: float, my_car, rot) -> ControllerState:
+        """Jump and pitch nose up; hand off to hover once past ~45 degrees."""
         if self._startup_t0 < 0:
             self._startup_t0 = t
         dt = t - self._startup_t0
 
         controls = ControllerState()
         if dt < 0.1:
-            # Single jump only — no pitch here to avoid triggering a flip/dodge
+            # Single jump with nose-up pitch (not a second press, so no flip/dodge)
             controls.jump = True
+            controls.pitch = 1.0
         elif my_car.air_state != AirState.OnGround:
-            # Airborne: hand off to hover; the PD will pitch nose up from here
-            self._state = "HOVER"
-        elif dt > 0.4:
-            # Still on ground after jump — reset and retry
+            # Airborne: keep pitching and boost upward; hand off once nose is ~45° up
+            controls.pitch = 1.0
+            controls.boost = True
+            if float(rot.pitch) > math.pi / 4:
+                self._state = "HOVER"
+        elif dt > 0.5:
+            # Still on ground after 0.5s — reset and retry
             self._startup_t0 = -1.0
 
         return controls
@@ -147,27 +150,31 @@ class HeatseekGoalie(Bot):
         target_x: float,
         target_z: float,
     ) -> ControllerState:
+        """Candle hover: nose up, roll=0, lateral yaw drift toward predicted crossing."""
         ori = Orientation(rot)
 
+        # Angular velocity projected onto car-local axes for PD damping
         pitch_rate = angvel.dot(ori.right)
         roll_rate = angvel.dot(ori.forward)
         yaw_rate = angvel.dot(ori.up)
 
-        # PD: pitch → +π/2 (candle / nose-up)
+        # PD: pitch → +π/2 (candle / nose straight up)
         pitch_err = HALF_PI - float(rot.pitch)
         pitch_ctrl = clamp(3.0 * pitch_err - 0.8 * pitch_rate, -1.0, 1.0)
 
-        # PD: roll → 0
+        # PD: roll → 0 (no sideways spin)
         roll_err = -float(rot.roll)
         roll_ctrl = clamp(3.0 * roll_err - 0.8 * roll_rate, -1.0, 1.0)
 
-        # Yaw bias for lateral drift toward predicted ball crossing
-        # Sign flips based on which goal we defend (facing +y vs -y in candle orientation)
+        # Yaw bias for lateral drift toward predicted ball crossing.
+        # In candle orientation, yaw tilts the nose sideways; the direction mapping
+        # to world-x flips based on which goal we defend (facing +y vs -y).
         lat_err = target_x - float(pos.x)
         yaw_sign = 1.0 if ori.up.y <= 0 else -1.0
         yaw_bias = clamp(lat_err * yaw_sign / 600.0, -0.35, 0.35)
         yaw_ctrl = clamp(-0.5 * yaw_rate + yaw_bias, -1.0, 1.0)
 
+        # Boost on/off to hold target height
         boost = pos.z < target_z
 
         controls = ControllerState()
