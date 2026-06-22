@@ -1,7 +1,7 @@
 #:schema https://rlbot.org/schemas/agent.json
 [settings]
 # The name that will be displayed in game
-name = "Python Example"
+name = "Heatseek Goalie"
 # Path to loadout config from runner
 loadout_file = "loadout.toml"
 # (OPTIONAL) - what you want the working directory set to
@@ -17,7 +17,7 @@ run_command = "..\\venv\\Scripts\\python bot.py"
 run_command_linux = "../venv/bin/python bot.py"
 # This must be a unqiue identifier for your bot
 # recommended format is "developer/botname"
-agent_id = "rlbot_community/python_example"
+agent_id = "rlbot_community/heatseek_goalie"
 # This is the path to your bot's logo image,
 # which will be displayed in the GUI
 # The example bot does not have a logo

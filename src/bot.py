@@ -1,128 +1,159 @@
+import math
 from typing import override
 
-from rlbot.flat import BallAnchor, ControllerState, GamePacket
+from rlbot.flat import AirState, ControllerState, GamePacket
 from rlbot.managers import Bot
-from rlbot_flatbuffers import CarAnchor
 
-from util.ball_prediction_analysis import find_slice_at_time
-from util.boost_pad_tracker import BoostPadTracker
-from util.drive import steer_toward_target
-from util.sequence import ControlStep, Sequence
+from util.orientation import Orientation
 from util.vec import Vec3
 
+HALF_PI = math.pi / 2
+HOVER_HEIGHT = 200  # base hover z (UU); adjustable per testing
 
-class MyBot(Bot):
-    active_sequence: Sequence | None = None
-    boost_pad_tracker: BoostPadTracker = BoostPadTracker()
+
+def clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+def find_goal_crossing(slices, goal_y: float) -> "Vec3 | None":
+    """Return interpolated ball position where prediction first crosses the goal y-plane."""
+    prev_loc = None
+    for s in slices:
+        loc = s.physics.location
+        if prev_loc is not None and prev_loc.y != loc.y:
+            if (prev_loc.y - goal_y) * (loc.y - goal_y) <= 0:
+                t = (goal_y - prev_loc.y) / (loc.y - prev_loc.y)
+                return Vec3(
+                    prev_loc.x + t * (loc.x - prev_loc.x),
+                    goal_y,
+                    prev_loc.z + t * (loc.z - prev_loc.z),
+                )
+        prev_loc = loc
+    return None
+
+
+class HeatseekGoalie(Bot):
+    _state: str = "STARTUP"
+    _startup_t0: float = -1.0
 
     @override
     def initialize(self):
-        # Set up information about the boost pads now that the game is active and the info is available
-        self.boost_pad_tracker.initialize_boosts(self.field_info)
+        pass
 
     @override
     def get_output(self, packet: GamePacket) -> ControllerState:
-        """
-        This function will be called by the framework many times per second. This is where you can
-        see the motion of the ball, etc. and return controls to drive your car.
-        """
-
-        # Keep our boost pad info updated with which pads are currently active
-        self.boost_pad_tracker.update_boost_status(packet)
-
-        if len(packet.balls) == 0:
-            # If there are no balls current in the game (likely due to being in a replay), skip this tick.
+        if not packet.balls:
             return ControllerState()
-        # we can now assume there's at least one ball in the match
 
-        # This is good to keep at the beginning of get_output. It will allow you to continue
-        # any sequences that you may have started during a previous call to get_output.
-        if self.active_sequence is not None and not self.active_sequence.done:
-            return self.active_sequence.tick(packet)
-
-        # Gather some information about our car and the ball
         my_car = packet.players[self.index]
-        car_location = Vec3(my_car.physics.location)
-        car_velocity = Vec3(my_car.physics.velocity)
-        ball_location = Vec3(packet.balls[0].physics.location)
+        physics = my_car.physics
+        pos = Vec3(physics.location)
+        rot = physics.rotation
+        angvel = Vec3(physics.angular_velocity)
+        t = packet.match_info.seconds_elapsed
 
-        # By default we will chase the ball, but target_location can be changed later
-        target_location = ball_location
+        # Landing or getting knocked down → restart airborne sequence
+        if my_car.air_state == AirState.OnGround and self._state != "STARTUP":
+            self._state = "STARTUP"
+            self._startup_t0 = -1.0
+
+        # Find the y-coordinate of our own goal from field info
+        goal_y = 0.0
+        for g in self.field_info.goals:
+            if g.team_num == self.team:
+                goal_y = float(g.location.y)
+                break
+
+        # Default: hover at goal center; override with predicted crossing point
+        target_x = 0.0
+        target_z = float(HOVER_HEIGHT)
+        if self.ball_prediction.slices:
+            crossing = find_goal_crossing(self.ball_prediction.slices, goal_y)
+            if crossing is not None:
+                target_x = clamp(float(crossing.x), -700.0, 700.0)
+                target_z = clamp(float(crossing.z), 60.0, 560.0)
 
         self.renderer.begin_rendering()
-
-        if car_location.dist(ball_location) > 1500:
-            # We're far away from the ball, let's try to lead it a little bit
-            # self.ball_prediction can predict bounces, etc
-            ball_in_future = find_slice_at_time(
-                self.ball_prediction, packet.match_info.seconds_elapsed + 2
-            )
-
-            # ball_in_future might be None if we don't have an adequate ball prediction right now, like during
-            # replays, so check it to avoid errors.
-            if ball_in_future is not None:
-                target_location = Vec3(ball_in_future.physics.location)
-
-                # BallAnchor(0) will dynamically start the point at the ball's current location
-                # 0 makes it reference the ball at index 0 in the packet.balls list
-                self.renderer.draw_line_3d(
-                    BallAnchor(0), target_location, self.renderer.cyan
-                )
-
-        # Draw some things to help understand what the bot is thinking
-        self.renderer.draw_line_3d(
-            CarAnchor(self.index), target_location, self.renderer.white
-        )
+        hover_target = Vec3(target_x, goal_y, target_z)
+        self.renderer.draw_line_3d(pos, hover_target, self.renderer.yellow)
         self.renderer.draw_string_3d(
-            f"Speed: {car_velocity.length():.1f}",
-            CarAnchor(self.index),
-            1,
-            self.renderer.white,
+            f"{self._state}  z={pos.z:.0f}", pos, 1, self.renderer.white
         )
-        self.renderer.draw_line_3d(
-            target_location - Vec3(0, 0, 50),
-            target_location + Vec3(0, 0, 50),
-            self.renderer.cyan,
-        )
-
         self.renderer.end_rendering()
 
-        if 750 < car_velocity.length() < 800:
-            # We'll do a front flip if the car is moving at a certain speed.
-            return self.begin_front_flip(packet)
+        if self._state == "STARTUP":
+            return self._do_startup(t, my_car)
+        return self._do_hover(pos, rot, angvel, target_x, target_z)
+
+    def _do_startup(self, t: float, my_car) -> ControllerState:
+        if self._startup_t0 < 0:
+            self._startup_t0 = t
+        dt = t - self._startup_t0
 
         controls = ControllerState()
-        controls.steer = steer_toward_target(my_car, target_location)
-        controls.throttle = 1.0
-        # You can set more controls if you want, like controls.boost.
+        if dt < 0.05:
+            # First jump press
+            controls.jump = True
+        elif dt < 0.20:
+            # Release jump; pitch nose hard upward while rising
+            controls.pitch = 1.0
+        elif dt < 0.25:
+            # Double jump for extra height; nose still pitching up
+            controls.jump = True
+            controls.pitch = 1.0
+            controls.boost = True
+        else:
+            # Keep boosting nose-up until clearly airborne, then hand off to hover
+            controls.pitch = 1.0
+            controls.boost = True
+            if my_car.air_state != AirState.OnGround:
+                self._state = "HOVER"
 
         return controls
 
-    def begin_front_flip(self, packet: GamePacket) -> ControllerState:
-        # Send some quickchat just for fun
-        # There won't be any content of the message for other bots,
-        # but "I got it!" will be display for a human to see!
-        self.send_match_comm(b"", "I got it!")
+    def _do_hover(
+        self,
+        pos: Vec3,
+        rot,
+        angvel: Vec3,
+        target_x: float,
+        target_z: float,
+    ) -> ControllerState:
+        ori = Orientation(rot)
 
-        # Do a front flip. We will be committed to this for a few seconds and the bot will ignore other
-        # logic during that time because we are setting the active_sequence.
-        self.active_sequence = Sequence(
-            [
-                ControlStep(duration=0.05, controls=ControllerState(jump=True)),
-                ControlStep(duration=0.05, controls=ControllerState(jump=False)),
-                ControlStep(
-                    duration=0.2, controls=ControllerState(jump=True, pitch=-1)
-                ),
-                ControlStep(duration=0.8, controls=ControllerState()),
-            ]
-        )
+        # Project world-space angular velocity onto car-local axes for PD damping
+        pitch_rate = angvel.dot(ori.right)
+        roll_rate = angvel.dot(ori.forward)
+        yaw_rate = angvel.dot(ori.up)
 
-        # Return the controls associated with the beginning of the sequence so we can start right away.
-        return self.active_sequence.tick(packet)
+        # PD: drive pitch → +π/2 (candle / nose-up)
+        pitch_err = HALF_PI - float(rot.pitch)
+        pitch_ctrl = clamp(3.0 * pitch_err - 0.8 * pitch_rate, -1.0, 1.0)
+
+        # PD: drive roll → 0 (no sideways spin)
+        roll_err = -float(rot.roll)
+        roll_ctrl = clamp(3.0 * roll_err - 0.8 * roll_rate, -1.0, 1.0)
+
+        # Lateral drift: apply a small yaw bias to tilt the nose toward target_x.
+        # In candle orientation, yaw rotates around the car's "up" vector, which is
+        # horizontal. The mapping to world-x drift depends on car heading:
+        #   facing +y (blue goal, ori.up.y ≈ −1): +yaw → +x tilt
+        #   facing −y (orange goal, ori.up.y ≈ +1): +yaw → −x tilt
+        lat_err = target_x - float(pos.x)
+        yaw_sign = 1.0 if ori.up.y <= 0 else -1.0
+        yaw_bias = clamp(lat_err * yaw_sign / 600.0, -0.35, 0.35)
+        yaw_ctrl = clamp(-0.5 * yaw_rate + yaw_bias, -1.0, 1.0)
+
+        # Height: boost on/off to hold target_z
+        boost = pos.z < target_z
+
+        controls = ControllerState()
+        controls.pitch = pitch_ctrl
+        controls.roll = roll_ctrl
+        controls.yaw = yaw_ctrl
+        controls.boost = boost
+        return controls
 
 
 if __name__ == "__main__":
-    # Connect to RLBot and run
-    # Having the agent id here allows for easier development,
-    # as otherwise the RLBOT_AGENT_ID environment variable must be set.
-    MyBot("rlbot_community/python_example").run()
+    HeatseekGoalie("rlbot_community/heatseek_goalie").run()
