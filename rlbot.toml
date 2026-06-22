@@ -3,7 +3,7 @@
 # use this along with launcher = "custom"
 # launcher_arg = "legendary"
 # "Steam", "Epic", "Custom", "NoLaunch"
-launcher = "Steam"
+launcher = "Epic"
 # Should RLBot start the bot processes automatically, or will a separate script start them
 auto_start_agents = true
 # Should RLBot wait for the bot processes to start before starting the match
@@ -12,7 +12,7 @@ wait_for_agents = true
 [match]
 # What game mode the game should load.
 # Accepted values are "Soccer", "Hoops", "Dropshot", "Hockey", "Rumble", "Heatseeker", "Gridiron", "Knockout"
-game_mode = "Soccer"
+game_mode = "Heatseeker"
 # Which map the game should load into
 game_map_upk = "Stadium_P"
 # Automatically skip replays after a goal. Also stops match replays from being saved.
@@ -22,7 +22,7 @@ start_without_countdown = false
 # What should we do if you click run while a match is already in progress?
 # "RestartIfDifferent", "Restart", "ContinueAndSpawn"
 existing_match_behavior = "Restart"
-enable_rendering = false
+enable_rendering = true
 enable_state_setting = true
 auto_save_replay = false
 # Whether or not to use freeplay instead of an exhibition match
