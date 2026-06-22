@@ -27,18 +27,18 @@ logo_file = ""
 [details]
 # Short description of the bot
 description = """
-This is a multi-line description
-of the official python example bot
+A Heatseeker goalie bot that hovers in candle orientation (nose up) near its own goal,
+uses boost to stay airborne, and drifts laterally to intercept the predicted ball crossing.
 """
 # Fun fact about the bot
-fun_fact = "Made possible by RLBot v5"
+fun_fact = "Never touches the ground once it gets airborne"
 # Link to your repository
-source_link = "https://github.com/RLBot/python-example"
+source_link = "https://github.com/ayuuhoo/heatseeker-bot"
 # Name of the bot's creator/developer
-developer = "The RLBot community"
+developer = "ayuuhoo"
 # Programming language
 language = "Python"
 # ALL POSSIBLE TAGS: 1v1, teamplay, goalie, hoops, dropshot, snow-day, rumble, spike-rush, heatseeker, memebot
 # NOTE: Only add the goalie tag if your bot only plays as a goalie; this directly contrasts with the teamplay tag!
 # NOTE: Only add a tag for a special game mode if you bot properly supports it
-tags = []
+tags = ["goalie", "heatseeker"]
