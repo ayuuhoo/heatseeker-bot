@@ -10,8 +10,12 @@ from util.vec import Vec3
 # ---- Tunable constants ----
 HOVER_HEIGHT = 300        # target hover height (UU)
 GOAL_RADIUS = 700         # how close to goal center counts as "in position"
-RECOVER_DIST = 2500       # past this, abandon hover and drive back (bumped far)
 STOP_SPEED = 120          # consider ourselves stopped below this speed (UU/s)
+# When airborne and knocked off position, aerial back if within this distance of
+# home, else come down and drive. Bigger = prefer aerialing. We aerial back more
+# readily when knocked INTO the net, and drive back more readily when knocked OUT.
+AERIAL_BACK_FRONT = 1200  # in front of the goal line (knocked out)
+AERIAL_BACK_IN_NET = 1600 # behind the goal line (knocked into the net)
 ARRIVE_RADIUS = 250       # within this of home, just brake to a stop (then launch)
 APPROACH_GAIN = 1.8       # desired drive speed per UU of distance (arrive behavior)
 MAX_DRIVE_SPEED = 2300    # cap on desired drive speed (UU/s)
@@ -86,16 +90,10 @@ class HeatseekGoalie(Bot):
         in_net = (pos.y - self._goal_line_y) * self._toward_field_y < 0.0
 
         # ---- State transitions ----
-        if flat_dist > RECOVER_DIST:
-            # Bumped really far out -> abandon the hover, come down and drive
-            # back on the ground (flying back from here is too slow).
-            self._state = "DRIVE"
-        elif in_net:
-            # Stuck behind the goal line -> drive out before doing anything else.
-            self._state = "DRIVE"
-        elif on_ground:
-            if flat_dist > GOAL_RADIUS:
-                # Not in position -> drive back.
+        if on_ground:
+            # On the ground we can't aerial -> drive out of the net / back to
+            # position, or launch if we're parked in position and stopped.
+            if in_net or flat_dist > GOAL_RADIUS:
                 self._state = "DRIVE"
             elif vel.length() < STOP_SPEED:
                 # In position and stopped -> jump up.
@@ -105,6 +103,13 @@ class HeatseekGoalie(Bot):
             else:
                 # In position but still rolling -> keep braking via DRIVE.
                 self._state = "DRIVE"
+        elif self._state != "LAUNCH":
+            # Airborne (and not mid-launch): aerial back to position if we're
+            # close enough, otherwise come down and drive back. We aerial back
+            # more readily when knocked INTO the net, and drive back more readily
+            # when knocked OUT in front of it.
+            aerial_back_dist = AERIAL_BACK_IN_NET if in_net else AERIAL_BACK_FRONT
+            self._state = "DRIVE" if flat_dist > aerial_back_dist else "HOVER"
 
         # ---- Debug overlay ----
         self.renderer.begin_rendering()
