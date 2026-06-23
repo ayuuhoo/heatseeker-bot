@@ -29,17 +29,28 @@ REVERSE_MAX_DIST = 1500   # only reverse (vs turn+boost) when home is closer tha
 REVERSE_SPEED = 1200      # reverse speed cap (no boost while reversing)
 
 ORI_P = 5.0               # orientation proportional gain (how hard we correct tilt)
-ORI_D = 1.0               # orientation derivative gain (damping, stops tumbling)
+ORI_D = 1.6               # orientation derivative gain (damping, stops tumbling/wobble)
 
-ALT_P = 2.5               # height error -> desired climb rate (UU/s per UU)
-MAX_CLIMB = 400           # cap on desired vertical speed (UU/s)
+ALT_P = 3.5               # height error -> desired climb rate (UU/s per UU)
+MAX_CLIMB = 900           # cap on desired vertical speed (UU/s)
 BOOST_NOSE_MIN = 0.5      # nose must point this far up before we allow boost
 
-POS_P = 0.0022            # side-to-side lean gain (per UU)
-POS_D = 0.0055            # side-to-side velocity damping (per UU/s)
 POS_P_Y = 0.0034          # distance-from-line lean gain (higher = quicker depth adjust)
 POS_D_Y = 0.0072          # distance-from-line velocity damping
-MAX_LEAN = 0.5            # max candle lean while holding position
+MAX_LEAN = 0.95           # max candle lean (≈43°): bigger = faster strafe, less upright
+# Lateral travel uses velocity control: aim for the fastest speed we can still
+# brake from to stop on target, then lean to chase it. Keeps the fast phase long
+# and avoids the slow final creep.
+STRAFE_DECEL = 195      # lateral decel we plan for when braking (UU/s^2)
+MAX_STRAFE_VEL = 1400     # cap on lateral travel speed (UU/s)
+LEAN_VEL_GAIN = 0.005     # candle lean per (UU/s) of lateral velocity error
+DESCENT_DECEL = 300       # vertical decel boost can manage when arresting a fall (UU/s^2)
+
+# Corner patrol (demo): loop the candle around the goal corners.
+CORNER_X = 750            # lateral reach toward each goalpost (UU)
+CORNER_LOW_Z = 160        # low corner height (UU)
+CORNER_HIGH_Z = 500       # high corner height (UU)
+CORNER_REACH = 50         # advance to the next corner once within this (UU)
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -53,6 +64,10 @@ class HeatseekGoalie(Bot):
     _goal_pos: Vec3 = Vec3(0, 0, 0)
     _goal_line_y: float = 0.0
     _toward_field_y: float = 1.0
+    _corner_idx: int = 0
+    _target_x: float = 0.0
+    _target_z: float = HOVER_HEIGHT
+    _corners: list[tuple[float, float]] = []
 
     @override
     def initialize(self):
@@ -65,6 +80,15 @@ class HeatseekGoalie(Bot):
         self._goal_line_y = goal_y
         self._toward_field_y = -1.0 if goal_y > 0 else 1.0
         self._goal_pos = Vec3(0, goal_y + self._toward_field_y * 150, 0)
+
+        # Goal corners to patrol, as (x, z), looped as a rectangle:
+        # bottom-left -> bottom-right -> top-right -> top-left -> repeat.
+        self._corners = [
+            (-CORNER_X, CORNER_LOW_Z),
+            (CORNER_X, CORNER_LOW_Z),
+            (CORNER_X, CORNER_HIGH_Z),
+            (-CORNER_X, CORNER_HIGH_Z),
+        ]
 
     @override
     def get_output(self, packet: GamePacket) -> ControllerState:
@@ -113,8 +137,10 @@ class HeatseekGoalie(Bot):
 
         # ---- Debug overlay ----
         self.renderer.begin_rendering()
+        target_world = Vec3(self._target_x, self._goal_pos.y, self._target_z)
+        self.renderer.draw_line_3d(pos, target_world, self.renderer.cyan)
         self.renderer.draw_string_3d(
-            f"{self._state}  z={pos.z:.0f}  spd={vel.length():.0f}",
+            f"{self._state} z={pos.z:.0f} tgt=({self._target_x:.0f},{self._target_z:.0f})",
             pos, 1, self.renderer.white,
         )
         self.renderer.end_rendering()
@@ -225,19 +251,31 @@ class HeatseekGoalie(Bot):
     def _hover(
         self, pos: Vec3, vel: Vec3, ori: Orientation, angvel: Vec3
     ) -> ControllerState:
-        # Hold our home position: lean the candle to push back toward it. The
-        # boost (fired for altitude) provides the horizontal thrust; the velocity
-        # term damps the lean so we settle instead of drifting/oscillating.
-        # At rest on-target both leans are 0, so the car sits perfectly vertical.
-        home = self._goal_pos
-        lean_x = clamp(POS_P * (home.x - pos.x) - POS_D * vel.x, -MAX_LEAN, MAX_LEAN)
-        # The y axis (distance from the goal line) uses stronger gains so depth
-        # is corrected more quickly.
+        # Patrol target: advance to the next goal corner once we've reached this
+        # one. (Later this target will instead be the ball's predicted crossing.)
+        target_x, target_z = self._corners[self._corner_idx]
+        if (
+            abs(pos.x - target_x) < CORNER_REACH
+            and abs(pos.z - target_z) < CORNER_REACH
+        ):
+            self._corner_idx = (self._corner_idx + 1) % len(self._corners)
+            target_x, target_z = self._corners[self._corner_idx]
+        self._target_x, self._target_z = target_x, target_z
+
+        # Lateral: aim for the fastest speed we can still brake from to stop on
+        # target_x, then lean to chase that speed. Staying near full speed until we
+        # must slow keeps the fast phase long and avoids the slow final creep.
+        dx = target_x - pos.x
+        strafe_cap = math.sqrt(2.0 * STRAFE_DECEL * abs(dx))
+        desired_vx = math.copysign(min(MAX_STRAFE_VEL, strafe_cap), dx)
+        lean_x = clamp(LEAN_VEL_GAIN * (desired_vx - vel.x), -MAX_LEAN, MAX_LEAN)
+
+        # Depth: hold the goal line (small corrections, position PD).
         lean_y = clamp(
-            POS_P_Y * (home.y - pos.y) - POS_D_Y * vel.y, -MAX_LEAN, MAX_LEAN
+            POS_P_Y * (self._goal_pos.y - pos.y) - POS_D_Y * vel.y, -MAX_LEAN, MAX_LEAN
         )
 
-        # Desired orientation: nose up (leaned toward home), roof toward the field.
+        # Desired orientation: nose up (leaned toward target), roof toward field.
         f_d = Vec3(lean_x, lean_y, 1.0).normalized()
         up_ref = Vec3(0.0, self._toward_field_y, 0.0)
         right_d = up_ref.cross(f_d).normalized()
@@ -245,11 +283,14 @@ class HeatseekGoalie(Bot):
 
         controls = self._orient_controls(ori, angvel, f_d, right_d, up_d)
 
-        # Feathered boost for altitude: target a vertical speed proportional to
-        # the height error, then boost only while we're slower than that. Near
-        # the target height the desired speed -> 0, so boost pulses on/off to
-        # cancel gravity -> a steady hover instead of flying up.
-        desired_vz = clamp(ALT_P * (HOVER_HEIGHT - pos.z), -MAX_CLIMB, MAX_CLIMB)
+        # Height via feathered boost. When BELOW target, climb at ALT_P * error.
+        # When ABOVE, fall under gravity but no faster than we can still brake to a
+        # stop (sqrt(2*decel*drop)), so boost arrests the descent on time, not late.
+        dz = target_z - pos.z
+        if dz < 0.0:
+            desired_vz = -min(MAX_CLIMB, math.sqrt(2.0 * DESCENT_DECEL * -dz))
+        else:
+            desired_vz = min(MAX_CLIMB, ALT_P * dz)
         controls.boost = ori.forward.z > BOOST_NOSE_MIN and vel.z < desired_vz
         return controls
 
