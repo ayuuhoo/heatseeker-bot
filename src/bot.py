@@ -42,7 +42,7 @@ BOOST_NOSE_MIN = 0.5      # nose must point this far up before we allow boost
 # the nose along (desired accel + gravity) so one boost serves every axis at the
 # right ratio, then feather boost to track the vertical profile.
 ACC_P = 4.0               # lateral position error -> accel (UU/s^2 per UU)
-ACC_D = 5.0               # lateral velocity damping (UU/s^2 per UU/s)
+ACC_D = 6.0               # lateral velocity damping (UU/s^2 per UU/s)
 ACC_P_Y = 4.0             # depth (distance-from-line) position gain
 ACC_D_Y = 6.0             # depth velocity damping
 ACC_Z = 3.0               # vertical: velocity error -> accel
@@ -81,6 +81,7 @@ CORNER_X = 750            # lateral reach toward each goalpost (UU)
 CORNER_LOW_Z = 160        # low corner height (UU)
 CORNER_HIGH_Z = 500       # high corner height (UU)
 CORNER_REACH = 80         # advance to the next corner once within this (UU)
+CORNER_DWELL = 2.5        # seconds to hold each corner (watch it settle) before moving on
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -99,6 +100,7 @@ class HeatseekGoalie(Bot):
     _sim_path: list[Vec3] = []  # last simulated homing path, for debug rendering
     _corner_idx: int = 0
     _corners: list[tuple[float, float]] = []
+    _corner_arrive_t: float = -1.0
 
     @override
     def initialize(self):
@@ -112,12 +114,14 @@ class HeatseekGoalie(Bot):
         self._toward_field_y = -1.0 if goal_y > 0 else 1.0
         self._goal_pos = Vec3(0, goal_y + self._toward_field_y * 150, 0)
 
-        # Corners to patrol (x, z), looped as a rectangle, for movement testing.
+        # Patrol targets (x, z) over all four corners, ordered so the across-net
+        # moves are diagonal (up + sideways): bottom-left -> top-right (up-right),
+        # then down to bottom-right -> top-left (up-left), then down to repeat.
         self._corners = [
-            (-CORNER_X, CORNER_LOW_Z),
-            (CORNER_X, CORNER_LOW_Z),
-            (CORNER_X, CORNER_HIGH_Z),
-            (-CORNER_X, CORNER_HIGH_Z),
+            (-CORNER_X, CORNER_LOW_Z),   # bottom-left
+            (CORNER_X, CORNER_HIGH_Z),   # top-right   (diagonal up-right)
+            (CORNER_X, CORNER_LOW_Z),    # bottom-right
+            (-CORNER_X, CORNER_HIGH_Z),  # top-left    (diagonal up-left)
         ]
 
     @override
@@ -146,7 +150,7 @@ class HeatseekGoalie(Bot):
             self._target_x = 0.0
             self._target_z = HOVER_HEIGHT
         elif PATROL_CORNERS:
-            self._patrol_corners(pos)
+            self._patrol_corners(pos, t)
         else:
             self._update_target(packet)
 
@@ -363,11 +367,17 @@ class HeatseekGoalie(Bot):
     # Test mode: cycle the hover target around the goal corners so we can tune
     # the movement against predictable targets (no ball involved).
     # ---------------------------------------------------------------
-    def _patrol_corners(self, pos: Vec3):
+    def _patrol_corners(self, pos: Vec3, t: float):
         self._sim_path = []
         tx, tz = self._corners[self._corner_idx]
-        if abs(pos.x - tx) < CORNER_REACH and abs(pos.z - tz) < CORNER_REACH:
+        reached = abs(pos.x - tx) < CORNER_REACH and abs(pos.z - tz) < CORNER_REACH
+        if reached and self._corner_arrive_t < 0:
+            self._corner_arrive_t = t  # first arrival -> start the dwell timer
+        # Hold the corner for CORNER_DWELL seconds (so we can watch it settle),
+        # then move to the next one.
+        if self._corner_arrive_t >= 0 and t - self._corner_arrive_t > CORNER_DWELL:
             self._corner_idx = (self._corner_idx + 1) % len(self._corners)
+            self._corner_arrive_t = -1.0
             tx, tz = self._corners[self._corner_idx]
         self._target_x, self._target_z = tx, tz
 
