@@ -11,6 +11,7 @@ from util.vec import Vec3
 HOVER_HEIGHT = 300        # target hover height (UU)
 GOAL_RADIUS = 700         # how close to goal center counts as "in position"
 STOP_SPEED = 120          # consider ourselves stopped below this speed (UU/s)
+UPRIGHT_MIN = 0.6         # car.up.z must exceed this to count as upright on the ground
 # When airborne and knocked off position, aerial back if within this distance of
 # home, else come down and drive. Bigger = prefer aerialing. We aerial back more
 # readily when knocked INTO the net, and drive back more readily when knocked OUT.
@@ -28,29 +29,48 @@ BEHIND_ANGLE = 2.0        # heading error (rad) past which home counts as "behin
 REVERSE_MAX_DIST = 1500   # only reverse (vs turn+boost) when home is closer than this
 REVERSE_SPEED = 1200      # reverse speed cap (no boost while reversing)
 
-ORI_P = 5.0               # orientation proportional gain (how hard we correct tilt)
-ORI_D = 1.6               # orientation derivative gain (damping, stops tumbling/wobble)
+ORI_P = 7.0               # orientation proportional gain (higher = tilts/reacts faster)
+ORI_D = 2.25              # orientation derivative gain (damping; matches ORI_P so air
+                          # recovery settles wheels-down instead of landing sideways)
 
-ALT_P = 3.5               # height error -> desired climb rate (UU/s per UU)
+CLIMB_DECEL = 550         # gravity-limited decel used to plan climb braking (UU/s^2),
+                          # so we don't sail past the target height on the way up
 MAX_CLIMB = 900           # cap on desired vertical speed (UU/s)
 BOOST_NOSE_MIN = 0.5      # nose must point this far up before we allow boost
 
-POS_P_Y = 0.0034          # distance-from-line lean gain (higher = quicker depth adjust)
-POS_D_Y = 0.0072          # distance-from-line velocity damping
-MAX_LEAN = 0.95           # max candle lean (≈43°): bigger = faster strafe, less upright
-# Lateral travel uses velocity control: aim for the fastest speed we can still
-# brake from to stop on target, then lean to chase it. Keeps the fast phase long
-# and avoids the slow final creep.
-STRAFE_DECEL = 195      # lateral decel we plan for when braking (UU/s^2)
-MAX_STRAFE_VEL = 1400     # cap on lateral travel speed (UU/s)
-LEAN_VEL_GAIN = 0.005     # candle lean per (UU/s) of lateral velocity error
+# Hover acceleration controller: compute a desired acceleration per axis, point
+# the nose along (desired accel + gravity) so one boost serves every axis at the
+# right ratio, then feather boost to track the vertical profile.
+ACC_P = 4.0               # lateral position error -> accel (UU/s^2 per UU)
+ACC_D = 5.0               # lateral velocity damping (UU/s^2 per UU/s)
+ACC_P_Y = 4.0             # depth (distance-from-line) position gain
+ACC_D_Y = 6.0             # depth velocity damping
+ACC_Z = 3.0               # vertical: velocity error -> accel
+A_HORIZ_MAX = 700         # cap on commanded horizontal accel (UU/s^2)
+A_VERT_MAX = 340          # cap on commanded vertical accel (~boost up budget, UU/s^2)
+GRAVITY = 650             # gravity the boost must counter (UU/s^2)
+MAX_TILT = 1.1            # cap on horizontal/vertical thrust ratio (tilt ≈ 48°)
+MIN_UP_THRUST = 150       # keep some up-thrust so the nose never points down
 DESCENT_DECEL = 300       # vertical decel boost can manage when arresting a fall (UU/s^2)
+BALL_DIR_SPEED = 400      # min ball y-speed (UU/s) to treat it as committed to a net
 
-# Corner patrol (demo): loop the candle around the goal corners.
-CORNER_X = 750            # lateral reach toward each goalpost (UU)
-CORNER_LOW_Z = 160        # low corner height (UU)
-CORNER_HIGH_Z = 500       # high corner height (UU)
-CORNER_REACH = 50         # advance to the next corner once within this (UU)
+# Heatseeker homing simulation (RLBot's prediction ignores the homing curve, so
+# we model it ourselves). The ball steers toward the goal each step.
+HEATSEEKER_TURN_ACCEL = 650 # lateral steering accel toward goal (UU/s^2). Turn radius
+                             # = speed^2/accel, so faster balls curve less — TUNE this
+HEATSEEKER_TARGET_Z = 320    # height of the goal point the ball seeks (UU)
+HEATSEEKER_SIM_DT = 1.0 / 60 # simulation timestep (s)
+HEATSEEKER_SIM_TIME = 4.0    # how far ahead to simulate (s)
+
+# Ball intercept: where to meet the ball, clamped to a reachable goal-mouth area.
+INTERCEPT_X = 850         # max lateral reach chasing the ball (UU, near the posts)
+INTERCEPT_Z_MIN = 60      # lowest height to chase to (UU)
+INTERCEPT_Z_MAX = 620     # highest height to chase to (UU, near the crossbar)
+# If the predicted impact is beyond this (clearly going to miss), idle instead of
+# chasing the clamped target. Posts are ~893 wide / 642 tall, so these leave a
+# margin: a just-outside shot is still covered, a way-wide one is ignored.
+SUPER_FAR_X = 1600        # idle if predicted impact x is wider than this (UU)
+SUPER_FAR_Z = 1050        # idle if predicted impact z is higher than this (UU)
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -64,10 +84,9 @@ class HeatseekGoalie(Bot):
     _goal_pos: Vec3 = Vec3(0, 0, 0)
     _goal_line_y: float = 0.0
     _toward_field_y: float = 1.0
-    _corner_idx: int = 0
     _target_x: float = 0.0
     _target_z: float = HOVER_HEIGHT
-    _corners: list[tuple[float, float]] = []
+    _sim_path: list[Vec3] = []  # last simulated homing path, for debug rendering
 
     @override
     def initialize(self):
@@ -80,15 +99,6 @@ class HeatseekGoalie(Bot):
         self._goal_line_y = goal_y
         self._toward_field_y = -1.0 if goal_y > 0 else 1.0
         self._goal_pos = Vec3(0, goal_y + self._toward_field_y * 150, 0)
-
-        # Goal corners to patrol, as (x, z), looped as a rectangle:
-        # bottom-left -> bottom-right -> top-right -> top-left -> repeat.
-        self._corners = [
-            (-CORNER_X, CORNER_LOW_Z),
-            (CORNER_X, CORNER_LOW_Z),
-            (CORNER_X, CORNER_HIGH_Z),
-            (-CORNER_X, CORNER_HIGH_Z),
-        ]
 
     @override
     def get_output(self, packet: GamePacket) -> ControllerState:
@@ -109,6 +119,14 @@ class HeatseekGoalie(Bot):
         # waiting for the match timer to start.
         if phase not in (MatchPhase.Active, MatchPhase.Kickoff):
             return ControllerState()
+
+        # On kickoff (e.g. just after a goal), reset the hover target to center.
+        # During active play, update where we want to be based on the ball.
+        if phase == MatchPhase.Kickoff:
+            self._target_x = 0.0
+            self._target_z = HOVER_HEIGHT
+        else:
+            self._update_target(packet)
 
         flat_dist = pos.flat().dist(self._goal_pos.flat())
         in_net = (pos.y - self._goal_line_y) * self._toward_field_y < 0.0
@@ -139,6 +157,12 @@ class HeatseekGoalie(Bot):
         self.renderer.begin_rendering()
         target_world = Vec3(self._target_x, self._goal_pos.y, self._target_z)
         self.renderer.draw_line_3d(pos, target_world, self.renderer.cyan)
+        # Red curve = our simulated Heatseeker homing path (tune SEEK_RATE so it
+        # matches where the ball actually goes).
+        for i in range(len(self._sim_path) - 1):
+            self.renderer.draw_line_3d(
+                self._sim_path[i], self._sim_path[i + 1], self.renderer.red
+            )
         self.renderer.draw_string_3d(
             f"{self._state} z={pos.z:.0f} tgt=({self._target_x:.0f},{self._target_z:.0f})",
             pos, 1, self.renderer.white,
@@ -146,6 +170,14 @@ class HeatseekGoalie(Bot):
         self.renderer.end_rendering()
 
         # ---- Dispatch ----
+        # Stuck on our side / roof on the ground -> jump to pop airborne AND roll
+        # toward wheels-down at the same time, so the moment we get any air we're
+        # already righting ourselves (otherwise we're wheels-sideways, can't drive).
+        if on_ground and ori.up.z < UPRIGHT_MIN:
+            self._state = "DRIVE"
+            controls = self._air_recover(pos, ori, angvel)
+            controls.jump = True
+            return controls
         if self._state == "DRIVE":
             return self._drive_to_goal(car, pos, vel, ori, angvel)
         if self._state == "LAUNCH":
@@ -243,6 +275,97 @@ class HeatseekGoalie(Bot):
         return controls
 
     # ---------------------------------------------------------------
+    # Simulate the Heatseeker homing ourselves and find where the ball will
+    # cross our defending plane (our y). RLBot's built-in ball prediction does
+    # NOT model the Heatseeker curve (it's plain Soccar physics), so we roll our
+    # own: each step we steer the ball's velocity toward the goal it's seeking
+    # while keeping its speed, then advance. Returns (x, z) clamped to the goal,
+    # or None if it never crosses our plane.
+    # ---------------------------------------------------------------
+    def _simulate_heatseeker(self, pos: Vec3, vel: Vec3) -> "tuple[float, float] | None":
+        speed = vel.length()
+        if speed < 1.0:
+            return None
+
+        # The ball seeks our goal (it's coming at us). Aim at the goal center.
+        goal_target = Vec3(0.0, self._goal_line_y, HEATSEEKER_TARGET_Z)
+        defend_y = self._goal_pos.y
+        dt = HEATSEEKER_SIM_DT
+        steps = int(HEATSEEKER_SIM_TIME / dt)
+
+        self._sim_path = [pos]  # record the path for debug rendering
+        for i in range(steps):
+            to_goal = goal_target - pos
+            to_goal_len = to_goal.length()
+            if to_goal_len > 1.0:
+                to_goal_dir = to_goal * (1.0 / to_goal_len)
+                v_dir = vel * (1.0 / speed)
+                # Steer with a fixed LATERAL acceleration toward the goal (only the
+                # part perpendicular to our heading). Turn radius = speed^2 / accel,
+                # so a faster ball curves LESS over a given distance and a slow ball
+                # curves tightly -- i.e. ball speed is accounted for in the curve.
+                align = clamp(v_dir.dot(to_goal_dir), -1.0, 1.0)
+                lateral = to_goal_dir - v_dir * align
+                lat_len = lateral.length()
+                if lat_len > 1e-3:
+                    lateral = lateral * (1.0 / lat_len)
+                    vel = vel + lateral * (HEATSEEKER_TURN_ACCEL * dt)
+                    vlen = vel.length()
+                    if vlen > 1.0:
+                        vel = vel * (speed / vlen)  # homing keeps speed ~constant
+
+            # Homes to the goal center: when the ball is already below center it
+            # curves UP toward it, never further down.
+            if pos.z < HEATSEEKER_TARGET_Z and vel.z < 0.0:
+                vel = Vec3(vel.x, vel.y, 0.0)
+
+            new_pos = pos + vel * dt
+            if i % 4 == 0:
+                self._sim_path.append(new_pos)
+            if (pos.y - defend_y) * (new_pos.y - defend_y) <= 0.0 and pos.y != new_pos.y:
+                frac = (defend_y - pos.y) / (new_pos.y - pos.y)
+                x = pos.x + frac * (new_pos.x - pos.x)
+                z = pos.z + frac * (new_pos.z - pos.z)
+                self._sim_path.append(new_pos)
+                return (x, z)  # raw crossing; caller decides clamp vs idle
+            pos = new_pos
+        return None
+
+    # ---------------------------------------------------------------
+    # Decide our hover target based on where the ball is going:
+    #   - homing AT our net   -> aim at its simulated impact point
+    #   - homing toward THEM  -> recenter (we / the wall just cleared it)
+    #   - not committed       -> hold our current target
+    # ---------------------------------------------------------------
+    def _update_target(self, packet: GamePacket):
+        self._sim_path = []  # cleared; repopulated only if we simulate a shot
+        ball = packet.balls[0].physics
+        ball_pos = Vec3(ball.location)
+        ball_vel = Vec3(ball.velocity)
+
+        # >0 means moving toward the field/opponent, <0 means toward our net.
+        threat = float(ball.velocity.y) * self._toward_field_y
+        if threat < -BALL_DIR_SPEED:
+            # Coming at us -> aim where the homing curve will bring it to our plane.
+            crossing = self._simulate_heatseeker(ball_pos, ball_vel)
+            if crossing is not None:
+                raw_x, raw_z = crossing
+                if abs(raw_x) > SUPER_FAR_X or raw_z > SUPER_FAR_Z:
+                    # Impact is way wide/high of the goal -> it'll clearly miss, so
+                    # don't bother chasing it; just idle where we are.
+                    pass
+                else:
+                    # On or near the goal -> go to the impact, clamped to our reach
+                    # (so a near-post/just-outside shot still gets covered).
+                    self._target_x = clamp(raw_x, -INTERCEPT_X, INTERCEPT_X)
+                    self._target_z = clamp(raw_z, INTERCEPT_Z_MIN, INTERCEPT_Z_MAX)
+        elif threat > BALL_DIR_SPEED:
+            # Homing toward the opponent net -> reset to goal center.
+            self._target_x = 0.0
+            self._target_z = HOVER_HEIGHT
+        # else: ball isn't committed to a direction -> hold current target.
+
+    # ---------------------------------------------------------------
     # 3) Hover: stay vertical (nose straight up) and hold height.
     #    Orientation is corrected with proportional pitch/yaw/roll inputs
     #    (a "calculated amount" each tick, not a held button), and altitude
@@ -251,46 +374,54 @@ class HeatseekGoalie(Bot):
     def _hover(
         self, pos: Vec3, vel: Vec3, ori: Orientation, angvel: Vec3
     ) -> ControllerState:
-        # Patrol target: advance to the next goal corner once we've reached this
-        # one. (Later this target will instead be the ball's predicted crossing.)
-        target_x, target_z = self._corners[self._corner_idx]
-        if (
-            abs(pos.x - target_x) < CORNER_REACH
-            and abs(pos.z - target_z) < CORNER_REACH
-        ):
-            self._corner_idx = (self._corner_idx + 1) % len(self._corners)
-            target_x, target_z = self._corners[self._corner_idx]
-        self._target_x, self._target_z = target_x, target_z
+        # Target (_target_x/_target_z) is set each tick in get_output via
+        # _update_target, based on where the ball is homing.
+        target_x, target_z = self._target_x, self._target_z
 
-        # Lateral: aim for the fastest speed we can still brake from to stop on
-        # target_x, then lean to chase that speed. Staying near full speed until we
-        # must slow keeps the fast phase long and avoids the slow final creep.
-        dx = target_x - pos.x
-        strafe_cap = math.sqrt(2.0 * STRAFE_DECEL * abs(dx))
-        desired_vx = math.copysign(min(MAX_STRAFE_VEL, strafe_cap), dx)
-        lean_x = clamp(LEAN_VEL_GAIN * (desired_vx - vel.x), -MAX_LEAN, MAX_LEAN)
-
-        # Depth: hold the goal line (small corrections, position PD).
-        lean_y = clamp(
-            POS_P_Y * (self._goal_pos.y - pos.y) - POS_D_Y * vel.y, -MAX_LEAN, MAX_LEAN
+        # --- Desired acceleration per axis (PD on position), capped to what the
+        # candle can actually produce. ---
+        a_x = clamp(
+            ACC_P * (target_x - pos.x) - ACC_D * vel.x, -A_HORIZ_MAX, A_HORIZ_MAX
+        )
+        a_y = clamp(
+            ACC_P_Y * (self._goal_pos.y - pos.y) - ACC_D_Y * vel.y,
+            -A_HORIZ_MAX,
+            A_HORIZ_MAX,
         )
 
-        # Desired orientation: nose up (leaned toward target), roof toward field.
-        f_d = Vec3(lean_x, lean_y, 1.0).normalized()
-        up_ref = Vec3(0.0, self._toward_field_y, 0.0)
-        right_d = up_ref.cross(f_d).normalized()
-        up_d = f_d.cross(right_d).normalized()
-
-        controls = self._orient_controls(ori, angvel, f_d, right_d, up_d)
-
-        # Height via feathered boost. When BELOW target, climb at ALT_P * error.
-        # When ABOVE, fall under gravity but no faster than we can still brake to a
-        # stop (sqrt(2*decel*drop)), so boost arrests the descent on time, not late.
+        # Vertical: track a braking velocity profile both ways (so we never sail
+        # past the target height). Climb is gravity-limited (we can't thrust down),
+        # descent is boost-limited.
         dz = target_z - pos.z
         if dz < 0.0:
             desired_vz = -min(MAX_CLIMB, math.sqrt(2.0 * DESCENT_DECEL * -dz))
         else:
-            desired_vz = min(MAX_CLIMB, ALT_P * dz)
+            desired_vz = min(MAX_CLIMB, math.sqrt(2.0 * CLIMB_DECEL * dz))
+        a_z = clamp(ACC_Z * (desired_vz - vel.z), -A_VERT_MAX, A_VERT_MAX)
+
+        # --- Point the nose along the thrust we need (desired accel + gravity), so
+        # one boost serves climb AND strafe in the right proportion. Limit the tilt
+        # for stability. ---
+        up_thrust = max(a_z + GRAVITY, MIN_UP_THRUST)
+        max_horiz = MAX_TILT * up_thrust
+        horiz = math.hypot(a_x, a_y)
+        if horiz > max_horiz and horiz > 1e-3:
+            s = max_horiz / horiz
+            a_x *= s
+            a_y *= s
+
+        f_d = Vec3(a_x, a_y, up_thrust)
+        flen = f_d.length()
+        f_d = f_d * (1.0 / flen) if flen > 1e-3 else Vec3(0.0, 0.0, 1.0)
+        up_ref = Vec3(0.0, self._toward_field_y, 0.0)
+        right_d = up_ref.cross(f_d).normalized()
+        up_d = f_d.cross(right_d).normalized()
+        controls = self._orient_controls(ori, angvel, f_d, right_d, up_d)
+
+        # Feather boost to track the vertical profile. Because the nose is tilted
+        # toward the target, each boost also pushes us horizontally -- so this one
+        # duty cycle drives the climb/descent AND the strafe together, in the ratio
+        # the nose is pointing. No separate strafe-boost needed, so no overshoot.
         controls.boost = ori.forward.z > BOOST_NOSE_MIN and vel.z < desired_vz
         return controls
 
