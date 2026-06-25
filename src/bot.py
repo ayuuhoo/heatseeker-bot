@@ -58,7 +58,8 @@ BALL_DIR_SPEED = 400      # min ball y-speed (UU/s) to treat it as committed to 
 # we model it ourselves). The ball steers toward the goal each step.
 HEATSEEKER_TURN_ACCEL = 700 # lateral steering accel toward goal (UU/s^2). Turn radius
                              # = speed^2/accel, so faster balls curve less — TUNE this
-HEATSEEKER_TARGET_Z = 320    # height of the goal point the ball seeks (UU)
+HEATSEEKER_TARGET_Z = 270    # height of the goal point the ball seeks (UU) — lower if
+                             # the prediction still reads too high
 HEATSEEKER_SIM_DT = 1.0 / 60 # simulation timestep (s)
 HEATSEEKER_SIM_TIME = 5.0    # how far ahead to simulate (s)
 
