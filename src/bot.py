@@ -56,10 +56,11 @@ BALL_DIR_SPEED = 400      # min ball y-speed (UU/s) to treat it as committed to 
 
 # Heatseeker homing simulation (RLBot's prediction ignores the homing curve, so
 # we model it ourselves). The ball steers toward the goal each step.
-HEATSEEKER_TURN_ACCEL = 700 # lateral steering accel toward goal (UU/s^2). Turn radius
+HEATSEEKER_TURN_ACCEL = 800 # lateral steering accel toward goal (UU/s^2). Turn radius
                              # = speed^2/accel, so faster balls curve less — TUNE this
-HEATSEEKER_TARGET_Z = 270    # height of the goal point the ball seeks (UU) — lower if
-                             # the prediction still reads too high
+HEATSEEKER_TARGET_Z = 270    # height of the goal point the ball seeks (UU)
+HEATSEEKER_GRAVITY = 200     # downward arc of the predicted path (UU/s^2). Higher =
+                             # ball predicted to drop more (lower impact) — TUNE this
 HEATSEEKER_SIM_DT = 1.0 / 60 # simulation timestep (s)
 HEATSEEKER_SIM_TIME = 5.0    # how far ahead to simulate (s)
 
@@ -72,12 +73,15 @@ INTERCEPT_Z_MAX = 620     # highest height to chase to (UU, near the crossbar)
 # margin: a just-outside shot is still covered, a way-wide one is ignored.
 SUPER_FAR_X = 2200        # idle if predicted impact x is wider than this (UU)
 SUPER_FAR_Z = 1400        # idle if predicted impact z is higher than this (UU)
+# Smooth the ball target toward each tick's prediction (0..1, fraction per tick).
+# Lower = steadier candle but laggier; higher = snappier but jitterier.
+TARGET_SMOOTH = 0.12
 
 # ---- Movement test mode ----
 # True  -> patrol the goal corners (predictable targets for tuning the movement).
 # False -> real ball-tracking targeting. The hover controller is the same either
 # way, so movement tuning here transfers straight to the ball version.
-PATROL_CORNERS = True
+PATROL_CORNERS = False
 CORNER_X = 750            # lateral reach toward each goalpost (UU)
 CORNER_LOW_Z = 160        # low corner height (UU)
 CORNER_HIGH_Z = 500       # high corner height (UU)
@@ -322,11 +326,17 @@ class HeatseekGoalie(Bot):
 
         self._sim_path = [pos]  # record the path for debug rendering
         for i in range(steps):
+            # Gravity bends the path downward as the ball travels. Its SPEED stays
+            # constant (the seeker re-normalizes below), but the direction tilts
+            # down -- which is why the real ball arrives LOWER than a straight
+            # homing line would predict.
+            vel = vel + Vec3(0.0, 0.0, -HEATSEEKER_GRAVITY * dt)
+
             to_goal = goal_target - pos
             to_goal_len = to_goal.length()
             if to_goal_len > 1.0:
                 to_goal_dir = to_goal * (1.0 / to_goal_len)
-                v_dir = vel * (1.0 / speed)
+                v_dir = vel * (1.0 / max(vel.length(), 1e-3))
                 # Steer with a fixed LATERAL acceleration toward the goal (only the
                 # part perpendicular to our heading). Turn radius = speed^2 / accel,
                 # so a faster ball curves LESS over a given distance and a slow ball
@@ -337,14 +347,11 @@ class HeatseekGoalie(Bot):
                 if lat_len > 1e-3:
                     lateral = lateral * (1.0 / lat_len)
                     vel = vel + lateral * (HEATSEEKER_TURN_ACCEL * dt)
-                    vlen = vel.length()
-                    if vlen > 1.0:
-                        vel = vel * (speed / vlen)  # homing keeps speed ~constant
 
-            # Homes to the goal center: when the ball is already below center it
-            # curves UP toward it, never further down.
-            if pos.z < HEATSEEKER_TARGET_Z and vel.z < 0.0:
-                vel = Vec3(vel.x, vel.y, 0.0)
+            # Seeker keeps the ball at constant speed (only changes on a touch).
+            vlen = vel.length()
+            if vlen > 1.0:
+                vel = vel * (speed / vlen)
 
             new_pos = pos + vel * dt
             if i % 4 == 0:
@@ -400,10 +407,15 @@ class HeatseekGoalie(Bot):
                     # don't bother chasing it; just idle where we are.
                     pass
                 else:
-                    # On or near the goal -> go to the impact, clamped to our reach
-                    # (so a near-post/just-outside shot still gets covered).
-                    self._target_x = clamp(raw_x, -INTERCEPT_X, INTERCEPT_X)
-                    self._target_z = clamp(raw_z, INTERCEPT_Z_MIN, INTERCEPT_Z_MAX)
+                    # On or near the goal -> aim at the impact, clamped to our
+                    # reach. SMOOTH it toward the new value instead of snapping:
+                    # the prediction shifts a little every tick, and a jittery
+                    # target makes the candle wobble (a fixed corner target stays
+                    # rock-steady, which is why corner mode looks perfect).
+                    tx = clamp(raw_x, -INTERCEPT_X, INTERCEPT_X)
+                    tz = clamp(raw_z, INTERCEPT_Z_MIN, INTERCEPT_Z_MAX)
+                    self._target_x += (tx - self._target_x) * TARGET_SMOOTH
+                    self._target_z += (tz - self._target_z) * TARGET_SMOOTH
         elif threat > BALL_DIR_SPEED:
             # Ball was hit back toward the opponent (we / the wall cleared it) ->
             # threat is gone. Drop the old impact target and idle/stabilize right
