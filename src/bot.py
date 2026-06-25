@@ -72,6 +72,16 @@ INTERCEPT_Z_MAX = 620     # highest height to chase to (UU, near the crossbar)
 SUPER_FAR_X = 2200        # idle if predicted impact x is wider than this (UU)
 SUPER_FAR_Z = 1400        # idle if predicted impact z is higher than this (UU)
 
+# ---- Movement test mode ----
+# True  -> patrol the goal corners (predictable targets for tuning the movement).
+# False -> real ball-tracking targeting. The hover controller is the same either
+# way, so movement tuning here transfers straight to the ball version.
+PATROL_CORNERS = True
+CORNER_X = 750            # lateral reach toward each goalpost (UU)
+CORNER_LOW_Z = 160        # low corner height (UU)
+CORNER_HIGH_Z = 500       # high corner height (UU)
+CORNER_REACH = 80         # advance to the next corner once within this (UU)
+
 
 def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
@@ -87,6 +97,8 @@ class HeatseekGoalie(Bot):
     _target_x: float = 0.0
     _target_z: float = HOVER_HEIGHT
     _sim_path: list[Vec3] = []  # last simulated homing path, for debug rendering
+    _corner_idx: int = 0
+    _corners: list[tuple[float, float]] = []
 
     @override
     def initialize(self):
@@ -99,6 +111,14 @@ class HeatseekGoalie(Bot):
         self._goal_line_y = goal_y
         self._toward_field_y = -1.0 if goal_y > 0 else 1.0
         self._goal_pos = Vec3(0, goal_y + self._toward_field_y * 150, 0)
+
+        # Corners to patrol (x, z), looped as a rectangle, for movement testing.
+        self._corners = [
+            (-CORNER_X, CORNER_LOW_Z),
+            (CORNER_X, CORNER_LOW_Z),
+            (CORNER_X, CORNER_HIGH_Z),
+            (-CORNER_X, CORNER_HIGH_Z),
+        ]
 
     @override
     def get_output(self, packet: GamePacket) -> ControllerState:
@@ -125,6 +145,8 @@ class HeatseekGoalie(Bot):
         if phase == MatchPhase.Kickoff:
             self._target_x = 0.0
             self._target_z = HOVER_HEIGHT
+        elif PATROL_CORNERS:
+            self._patrol_corners(pos)
         else:
             self._update_target(packet)
 
@@ -337,6 +359,18 @@ class HeatseekGoalie(Bot):
     #   - homing toward THEM  -> recenter (we / the wall just cleared it)
     #   - not committed       -> hold our current target
     # ---------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Test mode: cycle the hover target around the goal corners so we can tune
+    # the movement against predictable targets (no ball involved).
+    # ---------------------------------------------------------------
+    def _patrol_corners(self, pos: Vec3):
+        self._sim_path = []
+        tx, tz = self._corners[self._corner_idx]
+        if abs(pos.x - tx) < CORNER_REACH and abs(pos.z - tz) < CORNER_REACH:
+            self._corner_idx = (self._corner_idx + 1) % len(self._corners)
+            tx, tz = self._corners[self._corner_idx]
+        self._target_x, self._target_z = tx, tz
+
     def _update_target(self, packet: GamePacket):
         self._sim_path = []  # cleared; repopulated only if we simulate a shot
         ball = packet.balls[0].physics
