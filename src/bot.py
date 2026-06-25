@@ -46,21 +46,21 @@ ACC_D = 5.0               # lateral velocity damping (UU/s^2 per UU/s)
 ACC_P_Y = 4.0             # depth (distance-from-line) position gain
 ACC_D_Y = 6.0             # depth velocity damping
 ACC_Z = 3.0               # vertical: velocity error -> accel
-A_HORIZ_MAX = 700         # cap on commanded horizontal accel (UU/s^2)
+A_HORIZ_MAX = 760         # cap on commanded horizontal accel (UU/s^2)
 A_VERT_MAX = 340          # cap on commanded vertical accel (~boost up budget, UU/s^2)
 GRAVITY = 650             # gravity the boost must counter (UU/s^2)
-MAX_TILT = 1.1            # cap on horizontal/vertical thrust ratio (tilt ≈ 48°)
+MAX_TILT = 1.17           # cap on horizontal/vertical thrust ratio (tilt ≈ 49.5°)
 MIN_UP_THRUST = 150       # keep some up-thrust so the nose never points down
 DESCENT_DECEL = 300       # vertical decel boost can manage when arresting a fall (UU/s^2)
 BALL_DIR_SPEED = 400      # min ball y-speed (UU/s) to treat it as committed to a net
 
 # Heatseeker homing simulation (RLBot's prediction ignores the homing curve, so
 # we model it ourselves). The ball steers toward the goal each step.
-HEATSEEKER_TURN_ACCEL = 650 # lateral steering accel toward goal (UU/s^2). Turn radius
+HEATSEEKER_TURN_ACCEL = 700 # lateral steering accel toward goal (UU/s^2). Turn radius
                              # = speed^2/accel, so faster balls curve less — TUNE this
 HEATSEEKER_TARGET_Z = 320    # height of the goal point the ball seeks (UU)
 HEATSEEKER_SIM_DT = 1.0 / 60 # simulation timestep (s)
-HEATSEEKER_SIM_TIME = 4.0    # how far ahead to simulate (s)
+HEATSEEKER_SIM_TIME = 5.0    # how far ahead to simulate (s)
 
 # Ball intercept: where to meet the ball, clamped to a reachable goal-mouth area.
 INTERCEPT_X = 850         # max lateral reach chasing the ball (UU, near the posts)
@@ -69,8 +69,8 @@ INTERCEPT_Z_MAX = 620     # highest height to chase to (UU, near the crossbar)
 # If the predicted impact is beyond this (clearly going to miss), idle instead of
 # chasing the clamped target. Posts are ~893 wide / 642 tall, so these leave a
 # margin: a just-outside shot is still covered, a way-wide one is ignored.
-SUPER_FAR_X = 1600        # idle if predicted impact x is wider than this (UU)
-SUPER_FAR_Z = 1050        # idle if predicted impact z is higher than this (UU)
+SUPER_FAR_X = 2200        # idle if predicted impact x is wider than this (UU)
+SUPER_FAR_Z = 1400        # idle if predicted impact z is higher than this (UU)
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -360,10 +360,13 @@ class HeatseekGoalie(Bot):
                     self._target_x = clamp(raw_x, -INTERCEPT_X, INTERCEPT_X)
                     self._target_z = clamp(raw_z, INTERCEPT_Z_MIN, INTERCEPT_Z_MAX)
         elif threat > BALL_DIR_SPEED:
-            # Homing toward the opponent net -> reset to goal center.
-            self._target_x = 0.0
-            self._target_z = HOVER_HEIGHT
-        # else: ball isn't committed to a direction -> hold current target.
+            # Ball was hit back toward the opponent (we / the wall cleared it) ->
+            # threat is gone. Drop the old impact target and idle/stabilize right
+            # where we are, instead of flying off to a now-stale target.
+            car_loc = packet.players[self.index].physics.location
+            self._target_x = float(car_loc.x)
+            self._target_z = clamp(float(car_loc.z), INTERCEPT_Z_MIN, INTERCEPT_Z_MAX)
+        # else: ball not committed to a direction -> hold current target.
 
     # ---------------------------------------------------------------
     # 3) Hover: stay vertical (nose straight up) and hold height.
